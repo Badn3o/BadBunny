@@ -1,23 +1,23 @@
 # BadBunny Monitor
 
-Bot de Telegram + monitor de TicketSwap para detectar en tiempo real (por sondeo) nuevas entradas de **Bad Bunny en Madrid** y avisarlas por Telegram.
+Bot de Telegram + monitor de TicketSwap para detectar nuevas entradas de **Bad Bunny en Madrid** y, si cumplen precio máximo, intentar enviarlas al carrito lo más rápido posible.
 
 ## Qué hace
 
 - Consulta TicketSwap cada `POLL_INTERVAL_SECONDS`.
-- Filtra resultados por:
-  - evento relacionado con Bad Bunny
-  - ciudad Madrid
-- Detecta nuevas entradas comparando contra histórico en memoria.
-- Envía alertas al chat de Telegram configurado.
+- Filtra resultados por `bad bunny` + `madrid`.
+- Detecta nuevas entradas (deduplicación en memoria).
+- Notifica por Telegram cada entrada nueva.
+- Si el precio detectado es `<= max` configurado, intenta **add to cart** inmediatamente.
 
-> Nota: TicketSwap puede cambiar su estructura/API; este proyecto usa un conector HTTP robusto con fallback HTML y puede requerir ajustes futuros.
+> Nota importante: TicketSwap puede cambiar APIs/endpoints y mecanismos anti-bot; puede requerir ajustes periódicos.
 
 ## Requisitos
 
 - Python 3.10+
 - Token de bot de Telegram (BotFather)
-- Chat ID destino (usuario o grupo)
+- Chat ID destino
+- Cookie de sesión de comprador de TicketSwap para operaciones de carrito
 
 ## Configuración
 
@@ -34,7 +34,16 @@ Variables principales:
 - `TELEGRAM_CHAT_ID`: chat donde mandar alertas.
 - `TICKETSWAP_QUERY`: por defecto `bad bunny madrid`.
 - `POLL_INTERVAL_SECONDS`: intervalo de sondeo, por defecto `30`.
-- `RUN_ONCE`: `true` para ejecutar una sola iteración (útil en pruebas).
+- `MAX_PRICE_EUR`: máximo de auto-compra inicial (se puede cambiar por Telegram).
+- `TICKETSWAP_BUYER_COOKIE`: cookie de sesión para intentar carrito.
+
+## Comandos del bot
+
+- `/start`
+- `/status`
+- `/help`
+- `/max <precio>` (ej. `/max 175`) para activar/actualizar auto-compra.
+- `/max off` para desactivar auto-compra.
 
 ## Instalación
 
@@ -49,12 +58,6 @@ pip install -e .[dev]
 ```bash
 badbunny-monitor
 ```
-
-## Comandos del bot
-
-- `/start`: confirma que el bot está vivo.
-- `/status`: devuelve estado del monitor (última ejecución, elementos nuevos, etc.).
-- `/help`: ayuda rápida.
 
 ## Testing
 

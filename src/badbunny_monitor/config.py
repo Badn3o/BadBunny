@@ -18,6 +18,8 @@ class Settings:
     poll_interval_seconds: int = 30
     run_once: bool = False
     request_timeout_seconds: int = 12
+    max_price_eur: float | None = None
+    ticketswap_buyer_cookie: str = ""
 
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -27,6 +29,12 @@ def _to_bool(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in TRUE_VALUES
+
+
+def _to_optional_float(value: str | None) -> float | None:
+    if value is None or not value.strip():
+        return None
+    return float(value.strip().replace(",", "."))
 
 
 def load_settings() -> Settings:
@@ -47,4 +55,6 @@ def load_settings() -> Settings:
         poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "30")),
         run_once=_to_bool(os.getenv("RUN_ONCE"), default=False),
         request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "12")),
+        max_price_eur=_to_optional_float(os.getenv("MAX_PRICE_EUR")),
+        ticketswap_buyer_cookie=os.getenv("TICKETSWAP_BUYER_COOKIE", "").strip(),
     )

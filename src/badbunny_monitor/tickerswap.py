@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import json
 import re
@@ -14,6 +15,15 @@ class Listing:
     city: str
     url: str
     price_text: str | None = None
+    price_eur: float | None = None
+
+
+@dataclass(frozen=True)
+class CartResult:
+    success: bool
+    status_code: int
+    endpoint: str
+    message: str
 
 
 class TicketSwapClient:
@@ -21,15 +31,47 @@ class TicketSwapClient:
 
     BASE_URL = "https://www.ticketswap.com"
 
-    def __init__(self, timeout_seconds: int = 12) -> None:
+    def __init__(self, timeout_seconds: int = 12, buyer_cookie: str = "") -> None:
         self.timeout_seconds = timeout_seconds
+        self.buyer_cookie = buyer_cookie
 
     async def search(self, query: str) -> list[Listing]:
+        return await asyncio.to_thread(self._search_sync, query)
+
+    def _search_sync(self, query: str) -> list[Listing]:
         from_api = self._search_json_api(query)
         if from_api:
             return self._filter_bad_bunny_madrid(from_api)
         from_html = self._search_html(query)
         return self._filter_bad_bunny_madrid(from_html)
+
+    async def add_to_cart(self, listing: Listing) -> CartResult:
+        return await asyncio.to_thread(self._add_to_cart_sync, listing)
+
+    def _add_to_cart_sync(self, listing: Listing) -> CartResult:
+        if not self.buyer_cookie:
+            return CartResult(False, 0, "", "Falta TICKETSWAP_BUYER_COOKIE para operar carrito")
+
+        payload = {"listing_id": listing.listing_id, "quantity": 1}
+        candidate_endpoints = [
+            f"{self.BASE_URL}/api/cart/v1/items",
+            f"{self.BASE_URL}/api/checkout/v1/cart/items",
+            f"{self.BASE_URL}/api/buyer/cart/items",
+        ]
+        for endpoint in candidate_endpoints:
+            try:
+                status, body = self._http_post_json(endpoint, payload)
+                if 200 <= status < 300:
+                    return CartResult(True, status, endpoint, "Entrada añadida al carrito")
+                if status in {401, 403}:
+                    return CartResult(False, status, endpoint, "Sesión inválida/no autorizada")
+                if status in {404, 405}:
+                    continue
+                return CartResult(False, status, endpoint, body[:180])
+            except Exception as exc:
+                last_error = str(exc)
+                continue
+        return CartResult(False, 0, "", f"No se pudo añadir al carrito. Último error: {locals().get('last_error', 'N/A')}")
 
     def _http_get(self, url: str, params: dict[str, str]) -> tuple[int, str]:
         full_url = f"{url}?{urlencode(params)}" if params else url
@@ -38,6 +80,23 @@ class TicketSwapClient:
             headers={
                 "User-Agent": "Mozilla/5.0 (BadBunnyMonitor)",
                 "Accept": "application/json, text/html;q=0.9,*/*;q=0.8",
+            },
+        )
+        with urlopen(req, timeout=self.timeout_seconds) as response:  # nosec B310
+            status = getattr(response, "status", 200)
+            body = response.read().decode("utf-8", errors="ignore")
+            return status, body
+
+    def _http_post_json(self, url: str, payload: dict[str, object]) -> tuple[int, str]:
+        req = Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "User-Agent": "Mozilla/5.0 (BadBunnyMonitor)",
+                "Accept": "application/json, text/plain;q=0.9,*/*;q=0.8",
+                "Content-Type": "application/json",
+                "Cookie": self.buyer_cookie,
             },
         )
         with urlopen(req, timeout=self.timeout_seconds) as response:  # nosec B310
@@ -75,7 +134,18 @@ class TicketSwapClient:
                 item_id = url or name
             if not name:
                 continue
-            listings.append(Listing(listing_id=item_id, title=name, city=city, url=url or self.BASE_URL))
+            price_text = str(item.get("price") or item.get("lowest_price") or "").strip() or None
+            price_eur = self._extract_price(price_text or "")
+            listings.append(
+                Listing(
+                    listing_id=item_id,
+                    title=name,
+                    city=city,
+                    url=url or self.BASE_URL,
+                    price_text=price_text,
+                    price_eur=price_eur,
+                )
+            )
         return listings
 
     def _search_html(self, query: str) -> list[Listing]:
@@ -99,7 +169,18 @@ class TicketSwapClient:
                 continue
             absolute = href if href.startswith("http") else f"{self.BASE_URL}{href}"
             city = "Madrid" if "madrid" in text.lower() or "madrid" in href.lower() else ""
-            results.append(Listing(listing_id=absolute, title=text, city=city, url=absolute))
+            price_eur = self._extract_price(text)
+            price_text = f"€{price_eur:.2f}" if price_eur is not None else None
+            results.append(
+                Listing(
+                    listing_id=absolute,
+                    title=text,
+                    city=city,
+                    url=absolute,
+                    price_text=price_text,
+                    price_eur=price_eur,
+                )
+            )
 
         dedup: dict[str, Listing] = {item.listing_id: item for item in results}
         return list(dedup.values())
@@ -111,3 +192,12 @@ class TicketSwapClient:
             if "bad bunny" in haystack and "madrid" in haystack:
                 filtered.append(item)
         return filtered
+
+    @staticmethod
+    def _extract_price(value: str) -> float | None:
+        if not value:
+            return None
+        match = re.search(r"(\d+[\.,]?\d*)", value.replace(" ", ""))
+        if not match:
+            return None
+        return float(match.group(1).replace(",", "."))

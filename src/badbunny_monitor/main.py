@@ -19,8 +19,15 @@ def configure_logging() -> None:
 def main() -> None:
     configure_logging()
     settings = load_settings()
-    notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
-    client = TicketSwapClient(timeout_seconds=settings.request_timeout_seconds)
+    notifier = TelegramNotifier(
+        settings.telegram_bot_token,
+        settings.telegram_chat_id,
+        initial_max_price_eur=settings.max_price_eur,
+    )
+    client = TicketSwapClient(
+        timeout_seconds=settings.request_timeout_seconds,
+        buyer_cookie=settings.ticketswap_buyer_cookie,
+    )
     monitor = BadBunnyMonitor(settings=settings, notifier=notifier, client=client)
     asyncio.run(monitor.run())
 
