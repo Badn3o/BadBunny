@@ -19,6 +19,8 @@ class Settings:
     runtime_state_path: str = "runtime_state.json"
     ticketswap_event_url: str = ""
     progress_to_telegram: bool = True
+    target_quantity: int = 1
+    runtime_status_path: str = "runtime_status.json"
 
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -39,12 +41,12 @@ def _to_optional_float(value: str | None) -> float | None:
 def _load_dotenv_file(path: Path) -> None:
     if not path.exists():
         return
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
+    for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw_line.lstrip("\ufeff").strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        key = key.strip()
+        key = key.strip().lstrip("\ufeff")
         value = value.strip().strip('"').strip("'")
         os.environ.setdefault(key, value)
 
@@ -77,4 +79,6 @@ def load_settings() -> Settings:
         runtime_state_path=os.getenv("RUNTIME_STATE_PATH", "runtime_state.json").strip() or "runtime_state.json",
         ticketswap_event_url=os.getenv("TICKETSWAP_EVENT_URL", "").strip(),
         progress_to_telegram=_to_bool(os.getenv("PROGRESS_TO_TELEGRAM"), default=True),
+        target_quantity=int(os.getenv("TARGET_QUANTITY", "1")),
+        runtime_status_path=os.getenv("RUNTIME_STATUS_PATH", "runtime_status.json").strip() or "runtime_status.json",
     )

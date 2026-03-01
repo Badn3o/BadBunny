@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import escape
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -11,7 +12,7 @@ import threading
 from wsgiref.simple_server import make_server
 from urllib.parse import parse_qs
 
-from .runtime_state import RuntimeState, RuntimeStateStore
+from .runtime_state import RuntimeStateStore
 
 
 @dataclass
@@ -27,61 +28,105 @@ class ProcessManager:
         self.log_path = Path(log_path)
         self.state = MonitorProcessState()
         self._lock = threading.Lock()
+        self._log_handle = None
 
     def read_env_text(self) -> str:
         if not self.env_path.exists():
             return ""
-        return self.env_path.read_text(encoding="utf-8")
+        return self.env_path.read_text(encoding="utf-8", errors="ignore")
 
     def write_env_text(self, text: str) -> None:
-        self.env_path.write_text(text.strip() + "\n", encoding="utf-8")
+        normalized = text.replace("\r\n", "\n")
+        self.env_path.write_text(normalized, encoding="utf-8")
 
     def _load_env_dict(self) -> dict[str, str]:
         env = os.environ.copy()
         if not self.env_path.exists():
             return env
-        for raw_line in self.env_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
+        for raw_line in self.env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.lstrip("\ufeff").strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
-            env[key.strip()] = value.strip().strip('"').strip("'")
+            env[key.strip().lstrip("\ufeff")] = value.strip().strip('"').strip("'")
         return env
+
+    def _runtime_status_path(self) -> Path:
+        env = self._load_env_dict()
+        return Path(env.get("RUNTIME_STATUS_PATH", "runtime_status.json"))
+
+    def status_snapshot(self) -> dict[str, str]:
+        path = self._runtime_status_path()
+        if not path.exists():
+            return {"bot_connected": False, "scraper_progress": "idle", "last_result": "N/A"}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return {
+                "bot_connected": bool(data.get("bot_connected", False)),
+                "scraper_progress": str(data.get("scraper_progress", "unknown")),
+                "last_result": str(data.get("last_result", "N/A")),
+            }
+        except Exception:
+            return {"bot_connected": False, "scraper_progress": "parse_error", "last_result": "N/A"}
+
+    def _close_log_handle(self) -> None:
+        if self._log_handle is not None:
+            try:
+                self._log_handle.close()
+            except Exception:
+                pass
+            self._log_handle = None
+
+    def _append_boot_log(self, message: str) -> None:
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        with self.log_path.open("a", encoding="utf-8") as fh:
+            fh.write(f"[{timestamp}] {message}\n")
 
     def start_monitor(self) -> str:
         with self._lock:
             if self.state.process and self.state.process.poll() is None:
                 return "Monitor ya está en ejecución."
+            if not self.env_path.exists():
+                msg = "No existe .env. Crea/pega tu configuración real en el editor y guarda antes de iniciar."
+                self._append_boot_log(msg)
+                return msg
+
             env = self._load_env_dict()
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_file = self.log_path.open("a", encoding="utf-8")
+            self._close_log_handle()
+            self._log_handle = self.log_path.open("a", encoding="utf-8", buffering=1)
             command = [sys.executable, "-m", "badbunny_monitor.main"]
 
-            # Si el paquete no está instalado en el intérprete activo,
-            # añadimos `src` a PYTHONPATH para ejecución desde repositorio.
             repo_src = str((Path(__file__).resolve().parents[2] / "src"))
             current_pythonpath = env.get("PYTHONPATH", "")
-            env["PYTHONPATH"] = (
-                f"{repo_src}{os.pathsep}{current_pythonpath}" if current_pythonpath else repo_src
-            )
+            env["PYTHONPATH"] = f"{repo_src}{os.pathsep}{current_pythonpath}" if current_pythonpath else repo_src
 
-            process = subprocess.Popen(
-                command,
-                cwd=str(Path(__file__).resolve().parents[2]),
-                stdout=log_file,
-                stderr=log_file,
-                text=True,
-                env=env,
-            )
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=str(Path(__file__).resolve().parents[2]),
+                    stdout=self._log_handle,
+                    stderr=self._log_handle,
+                    text=True,
+                    env=env,
+                )
+            except Exception as exc:
+                self._append_boot_log(f"Error iniciando monitor: {exc}")
+                self._close_log_handle()
+                return f"Error iniciando monitor: {exc}"
+
             self.state.process = process
             self.state.started_at_iso = datetime.now(timezone.utc).isoformat()
             self.state.last_exit_code = None
+            self._append_boot_log(f"Monitor iniciado con PID={process.pid}")
             return "Monitor iniciado."
 
     def stop_monitor(self) -> str:
         with self._lock:
             proc = self.state.process
             if not proc or proc.poll() is not None:
+                self._close_log_handle()
                 return "Monitor no está en ejecución."
             proc.terminate()
             try:
@@ -90,10 +135,17 @@ class ProcessManager:
                 proc.kill()
                 proc.wait(timeout=5)
             self.state.last_exit_code = proc.returncode
+            self._append_boot_log(f"Monitor detenido (exit={proc.returncode})")
+            self._close_log_handle()
             return f"Monitor detenido (exit={proc.returncode})."
 
     def restart_monitor(self) -> str:
         self.stop_monitor()
+        return self.start_monitor()
+
+    def restart_all(self) -> str:
+        self.stop_monitor()
+        self._append_boot_log("Reinicio total solicitado desde UI")
         return self.start_monitor()
 
     def health(self) -> str:
@@ -104,9 +156,10 @@ class ProcessManager:
         if rc is None:
             return "running"
         self.state.last_exit_code = rc
+        self._close_log_handle()
         return f"exited({rc})"
 
-    def tail_log(self, lines: int = 120) -> str:
+    def tail_log(self, lines: int = 200) -> str:
         if not self.log_path.exists():
             return "(sin trazas todavía)"
         content = self.log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -119,20 +172,25 @@ HTML_TEMPLATE = """<!doctype html>
   <meta charset=\"utf-8\" />
   <title>BadBunny Monitor - Control UI</title>
   <style>
-    body {{ font-family: Arial, sans-serif; margin: 24px; max-width: 1100px; }}
+    body {{ font-family: Arial, sans-serif; margin: 24px; max-width: 1200px; }}
     h1, h2 {{ color: #222; }}
     .card {{ border:1px solid #ddd; border-radius:8px; padding:16px; margin-bottom:16px; }}
     .ok {{ background:#e8f7e8; border-color:#6abf69; }}
-    .warn {{ background:#fff4e5; border-color:#e2a93b; }}
-    label {{ display:block; margin-top:8px; font-weight:600; }}
-    input, select, textarea {{ width:100%; padding:8px; margin-top:4px; }}
-    textarea {{ min-height: 280px; font-family: monospace; }}
+    .sem {{ font-size: 20px; margin-right: 8px; }}
+    textarea {{ width:100%; min-height: 280px; font-family: monospace; }}
     .actions button {{ margin-right:8px; margin-top:12px; padding:10px 16px; font-weight:700; }}
-    pre {{ background:#0f172a; color:#e2e8f0; padding:12px; border-radius:8px; overflow:auto; max-height: 420px; }}
+    pre {{ background:#0f172a; color:#e2e8f0; padding:12px; border-radius:8px; overflow:auto; max-height: 450px; }}
   </style>
 </head>
 <body>
-  <h1>BadBunny Monitor · Panel único</h1>
+  <h1>BadBunny Monitor · Aplicación única modular</h1>
+  <div class=\"card\">
+    <h2>Semáforos de estado</h2>
+    <p><span class=\"sem\">{bot_sem}</span> Comunicación con bot: <strong>{bot_state}</strong></p>
+    <p><span class=\"sem\">{scraper_sem}</span> Web scraping/progreso: <strong>{scraper_state}</strong></p>
+    <p><strong>Último resultado:</strong> {last_result}</p>
+  </div>
+
   <div class=\"card\">
     <h2>Estado proceso</h2>
     <p><strong>Estado:</strong> {status}</p>
@@ -141,17 +199,17 @@ HTML_TEMPLATE = """<!doctype html>
     <form method=\"post\" action=\"/control\" class=\"actions\">
       <button name=\"action\" value=\"start\" type=\"submit\">Iniciar monitor</button>
       <button name=\"action\" value=\"restart\" type=\"submit\">Reiniciar monitor</button>
+      <button name=\"action\" value=\"restart_all\" type=\"submit\">Reiniciar TODO</button>
       <button name=\"action\" value=\"stop\" type=\"submit\">Detener monitor</button>
     </form>
   </div>
 
   <div class=\"card\">
     <h2>Editor .env</h2>
-    <p>Edita configuración y reinicia desde aquí. Incluye token/chat, query, URL de evento, modo y cookies.</p>
     <form method=\"post\" action=\"/save-env\" class=\"actions\">
       <textarea name=\"env_text\">{env_text}</textarea>
       <button name=\"action\" value=\"save\" type=\"submit\">Guardar .env</button>
-      <button name=\"action\" value=\"save_restart\" type=\"submit\">Guardar y relanzar todo</button>
+      <button name=\"action\" value=\"save_restart\" type=\"submit\">Guardar y relanzar</button>
     </form>
   </div>
 
@@ -167,12 +225,16 @@ HTML_TEMPLATE = """<!doctype html>
 
 
 def build_page(manager: ProcessManager, message: str = "") -> bytes:
-    message_block = ""
-    if message:
-        message_block = f"<div class='card ok'><strong>{escape(message)}</strong></div>"
+    message_block = f"<div class='card ok'><strong>{escape(message)}</strong></div>" if message else ""
     health = manager.health()
     started = manager.state.started_at_iso or "N/A"
     exit_code = "N/A" if manager.state.last_exit_code is None else str(manager.state.last_exit_code)
+
+    snap = manager.status_snapshot()
+    bot_ok = bool(snap.get("bot_connected"))
+    scraper_state = str(snap.get("scraper_progress", "unknown"))
+    scraper_ok = scraper_state in {"running", "completed"}
+
     html = HTML_TEMPLATE.format(
         status=escape(health),
         started_at=escape(started),
@@ -180,6 +242,11 @@ def build_page(manager: ProcessManager, message: str = "") -> bytes:
         env_text=escape(manager.read_env_text()),
         trace_text=escape(manager.tail_log()),
         message_block=message_block,
+        bot_sem="🟢" if bot_ok else "🔴",
+        bot_state="OK" if bot_ok else "Sin conexión",
+        scraper_sem="🟢" if scraper_ok else "🟠",
+        scraper_state=escape(scraper_state),
+        last_result=escape(str(snap.get("last_result", "N/A"))),
     )
     return html.encode("utf-8")
 
@@ -195,14 +262,13 @@ def create_app(state_path: str = "runtime_state.json", env_path: str = ".env"):
         if method == "POST" and path == "/save-env":
             size = int(environ.get("CONTENT_LENGTH") or 0)
             body = environ["wsgi.input"].read(size).decode("utf-8")
-            form = parse_qs(body)
+            form = parse_qs(body, keep_blank_values=True)
             env_text = (form.get("env_text") or [""])[0]
             action = (form.get("action") or ["save"])[0]
             manager.write_env_text(env_text)
             message = "Archivo .env guardado."
             if action == "save_restart":
-                message = manager.restart_monitor()
-                message = f".env guardado. {message}"
+                message = f".env guardado. {manager.restart_monitor()}"
             page = build_page(manager, message)
             start_response("200 OK", [("Content-Type", "text/html; charset=utf-8")])
             return [page]
@@ -210,12 +276,14 @@ def create_app(state_path: str = "runtime_state.json", env_path: str = ".env"):
         if method == "POST" and path == "/control":
             size = int(environ.get("CONTENT_LENGTH") or 0)
             body = environ["wsgi.input"].read(size).decode("utf-8")
-            form = parse_qs(body)
+            form = parse_qs(body, keep_blank_values=True)
             action = (form.get("action") or [""])[0]
             if action == "start":
                 message = manager.start_monitor()
             elif action == "restart":
                 message = manager.restart_monitor()
+            elif action == "restart_all":
+                message = manager.restart_all()
             elif action == "stop":
                 message = manager.stop_monitor()
             else:

@@ -1,137 +1,65 @@
-# BadBunny Monitor (Windows + Linux/macOS)
+# BadBunny Monitor (aplicación única modular)
 
-Bot de Telegram + monitor de TicketSwap para detectar entradas de **Bad Bunny en Madrid** y gestionar auto-carrito en modo `test` o `real`.
+Aplicación única con arquitectura modular para monitorizar TicketSwap, comunicar por Telegram, trazar ejecución y controlar todo desde UI.
 
----
+## Arquitectura modular
 
-## 1) Ejecución rápida en **Windows** (recomendado)
+1. **Módulo de comunicación** (`communication.py` + `config.py`)
+   - Gestiona: token bot, chat id, URL objetivo, concepto búsqueda, precio máximo y número objetivo de entradas.
+2. **Módulo scraping/captura** (`scraper.py` + `tickerswap.py`)
+   - Estrategias iterativas de búsqueda y captura de venta (GraphQL + fallback REST).
+3. **Módulo de trazas** (`tracing.py`)
+   - Registro continuo de ejecución y estado (`monitor.log`, `runtime_status.json`).
+4. **Módulo de visualización/UI** (`gui.py`)
+   - Editor `.env`, controles de proceso, reinicio total y semáforos de salud.
 
-### Opción A: PowerShell (recomendada)
-
-1. Abre **PowerShell** en la carpeta del proyecto.
-2. Ejecuta:
-
-```powershell
-.\scripts\run_all.ps1
-```
-
-### Opción B: CMD
-
-1. Abre **Símbolo del sistema (cmd)** en la carpeta del proyecto.
-2. Ejecuta:
-
-```cmd
-scripts\run_all.cmd
-```
-
-Ambas opciones:
-- crean `.venv` si no existe,
-- instalan dependencias,
-- crean `.env` inicial si falta,
-- arrancan el panel único en `http://localhost:8080`.
+Todo se ejecuta encapsulado como una sola app desde el panel web.
 
 ---
 
-## 2) Ejecución rápida en Linux/macOS
+## Arranque (Windows / Linux / macOS)
 
-```bash
-./scripts/run_all.sh
-```
+- PowerShell: `./scripts/run_all.ps1`
+- CMD: `scripts\\run_all.cmd`
+- Linux/macOS: `./scripts/run_all.sh`
 
----
-
-## 3) Panel único web (`http://localhost:8080`)
-
-### Nota importante en Windows (error ModuleNotFoundError)
-
-Si antes veías el error:
-
-`Error while finding module specification for 'badbunny_monitor.main' (ModuleNotFoundError)`
-
-ya está corregido: el panel ahora relanza el monitor usando el **mismo intérprete Python activo** (venv) y fuerza `PYTHONPATH=src` como fallback.
-
-
-Desde la página puedes:
-1. Editar completo el archivo `.env`.
-2. Guardar cambios.
-3. Guardar y relanzar monitor.
-4. Iniciar/Reiniciar/Detener monitor.
-5. Ver traza en vivo (`monitor.log`) al final de la página.
+> Los scripts no sobreescriben `.env`. Debes tener `.env` real ya configurado.
 
 ---
 
-## 4) Configuración de `.env` (paso a paso)
-
-Variables principales:
+## Variables de comunicación (.env)
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
-- `TICKETSWAP_QUERY`
 - `TICKETSWAP_EVENT_URL`
-- `POLL_INTERVAL_SECONDS`
+- `TICKETSWAP_QUERY`
 - `MAX_PRICE_EUR`
-- `OPERATION_MODE` (`test` o `real`)
-- `PROGRESS_TO_TELEGRAM`
-- `RUNTIME_STATE_PATH`
+- `TARGET_QUANTITY` (número de entradas objetivo)
+- `OPERATION_MODE` (`test`/`real`)
 - `TICKETSWAP_BUYER_COOKIE`
-
-> Recomendación inicial: usar `OPERATION_MODE=test` hasta validar trazas y carrito.
-
----
-
-## 5) Flujo de compra: cómo está implementado
-
-El motor de carrito trabaja por capas para maximizar compatibilidad:
-
-1. **GraphQL prioritario** (formato observado en la web):
-   - `POST /api/graphql/private?version=4`
-   - fallback `POST /api/graphql/public?version=4`
-   - pruebas de mutaciones candidatas (`addListingToCart`, `addToCart`, `createCheckoutFromListing`).
-2. **Fallback REST**:
-   - `/api/cart/v1/items`
-   - `/api/checkout/v1/cart/items`
-   - `/api/buyer/cart/items`
-
-En todos los casos es imprescindible `TICKETSWAP_BUYER_COOKIE` válido.
-
-### Importante sobre modo TEST
-
-En `test`, si no aparecen resultados nuevos pero sí hay entradas detectadas del evento, el sistema intenta carrito con una entrada existente para validar extremo a extremo.
+- `RUNTIME_STATUS_PATH` (estado de semáforos)
 
 ---
 
-## 6) Lógica de packs de entradas
+## Panel UI (`http://localhost:8080`)
 
-Si TicketSwap muestra un pack (ej. 3 entradas):
-
-`precio_unitario = precio_total / número_de_entradas`
-
-En modo `real`, la comparación contra el máximo usa siempre el **precio unitario**.
-
----
-
-## 7) Análisis detallado de compra real
-
-Consulta el documento técnico:
-
-- `docs/TICKETSWAP_PURCHASE_ANALYSIS.md`
-
-Incluye hallazgos de la página objetivo, endpoints observados y estrategia de hardening del flujo de carrito.
+- Semáforos:
+  - Bot Telegram: verde/rojo
+  - Scraping: verde/ámbar
+- Estado proceso monitor
+- Botones: iniciar, reiniciar, **reiniciar TODO**, detener
+- Editor `.env`
+- Traza completa en vivo (`monitor.log`)
 
 ---
 
-## 8) Ejecución manual alternativa
+## Comportamiento en modo TEST
 
-```bash
-python -m venv .venv
-source .venv/bin/activate  # en Windows: .venv\Scripts\activate
-pip install -e .[dev]
-python -m badbunny_monitor.gui
-```
+Si no hay resultados nuevos pero sí listings del evento, se intenta captura con uno existente para verificar flujo completo.
 
 ---
 
-## 9) Testing
+## Testing
 
 ```bash
 pytest -q

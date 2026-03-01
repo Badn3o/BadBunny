@@ -5,9 +5,12 @@ import logging
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from .communication import CommunicationProfile
 from .config import Settings
 from .runtime_state import RuntimeStateStore
-from .tickerswap import Listing, TicketSwapClient
+from .scraper import AdaptiveScraper
+from .tickerswap import Listing
+from .tracing import TraceManager
 
 
 logger = logging.getLogger(__name__)
@@ -39,25 +42,41 @@ class SeenListings:
 
 
 class BadBunnyMonitor:
-    def __init__(self, settings: Settings, notifier: Notifier, client: TicketSwapClient) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        notifier: Notifier,
+        scraper: AdaptiveScraper,
+        communication: CommunicationProfile,
+        tracer: TraceManager,
+    ) -> None:
         self.settings = settings
         self.notifier = notifier
-        self.client = client
+        self.scraper = scraper
+        self.communication = communication
+        self.tracer = tracer
         self.seen = SeenListings()
         self.state_store = RuntimeStateStore(settings.runtime_state_path)
+        self.total_successful_captures = 0
 
     async def run(self) -> None:
         self._apply_runtime_state()
+        self.tracer.update_status(bot_connected=False, scraper_progress="idle", last_result="booting")
         await self.notifier.start()
+        self.tracer.update_status(bot_connected=True)
         try:
             while True:
                 self._apply_runtime_state()
                 await self._tick()
                 if self.settings.run_once:
                     break
+                if self.total_successful_captures >= max(1, self.communication.target_quantity):
+                    await self.notifier.send_message("✅ Objetivo de entradas alcanzado. Monitor pausado.")
+                    break
                 await asyncio.sleep(self.settings.poll_interval_seconds)
         finally:
             await self.notifier.stop()
+            self.tracer.update_status(bot_connected=False, scraper_progress="stopped")
 
     def _apply_runtime_state(self) -> None:
         state = self.state_store.load()
@@ -65,9 +84,9 @@ class BadBunnyMonitor:
         self.notifier.set_operation_mode(state.operation_mode)
 
     async def _tick(self) -> None:
-        search = await self.client.search(
-            self.settings.ticketswap_query,
-            event_url=self.settings.ticketswap_event_url,
+        search = await self.scraper.find(
+            self.communication.search_term,
+            event_url=self.communication.target_url,
         )
         listings = search.listings
         new_items = self.seen.find_new(listings)
@@ -84,6 +103,14 @@ class BadBunnyMonitor:
             operation_mode,
             max_price,
         )
+        self.tracer.record(
+            "INFO",
+            "tick",
+            listings=len(listings),
+            new=len(new_items),
+            mode=operation_mode,
+            max_price=max_price,
+        )
 
         if self.settings.progress_to_telegram:
             await self.notifier.send_message(self._format_progress(search.trace, len(listings), len(new_items)))
@@ -92,9 +119,10 @@ class BadBunnyMonitor:
             await self.notifier.send_message(self._format_alert(item))
             if self._should_try_buy(item, max_price_eur=max_price, operation_mode=operation_mode):
                 cart_attempts += 1
-                result = await self.client.add_to_cart(item)
+                result = await self.scraper.capture_sale(item)
                 if result.success:
                     cart_successes += 1
+                    self.total_successful_captures += 1
                 await self.notifier.send_message(self._format_cart_result(item, result.success, result.message))
 
         if operation_mode == "test" and not new_items and listings:
@@ -103,15 +131,21 @@ class BadBunnyMonitor:
                 "🧪 Modo TEST sin resultados nuevos: se intentará carrito con una entrada existente del evento."
             )
             cart_attempts += 1
-            result = await self.client.add_to_cart(candidate)
+            result = await self.scraper.capture_sale(candidate)
             if result.success:
                 cart_successes += 1
+                self.total_successful_captures += 1
             await self.notifier.send_message(self._format_cart_result(candidate, result.success, result.message))
 
         self.notifier.mark_iteration(
             new_items=len(new_items),
             cart_attempts=cart_attempts,
             cart_successes=cart_successes,
+        )
+        self.tracer.update_status(
+            last_result=f"new={len(new_items)} attempts={cart_attempts} successes={cart_successes}",
+            scraper_progress="completed",
+            bot_connected=True,
         )
 
     @staticmethod
