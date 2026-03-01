@@ -92,6 +92,14 @@ class TicketSwapClient:
         if not self.buyer_cookie:
             return CartResult(False, 0, "", "Falta TICKETSWAP_BUYER_COOKIE para operar carrito")
 
+        last_error = "N/A"
+
+        # 1) Intento principal: GraphQL (formato observado en TicketSwap web)
+        gql_result = self._try_add_to_cart_graphql(listing)
+        if gql_result is not None:
+            return gql_result
+
+        # 2) Fallback legacy REST candidates
         payload = {"listing_id": listing.listing_id, "quantity": 1}
         candidate_endpoints = [
             f"{self.BASE_URL}/api/cart/v1/items",
@@ -99,7 +107,6 @@ class TicketSwapClient:
             f"{self.BASE_URL}/api/buyer/cart/items",
         ]
 
-        last_error = "N/A"
         for endpoint in candidate_endpoints:
             try:
                 status, body = self._http_post_json(endpoint, payload)
@@ -109,11 +116,50 @@ class TicketSwapClient:
                     return CartResult(False, status, endpoint, "Sesión inválida/no autorizada")
                 if status in {404, 405}:
                     continue
-                return CartResult(False, status, endpoint, body[:200])
+                last_error = body[:200]
             except Exception as exc:
                 last_error = str(exc)
 
         return CartResult(False, 0, "", f"No se pudo añadir al carrito. Último error: {last_error}")
+
+    def _try_add_to_cart_graphql(self, listing: Listing) -> CartResult | None:
+        endpoints = [
+            f"{self.BASE_URL}/api/graphql/private?version=4",
+            f"{self.BASE_URL}/api/graphql/public?version=4",
+        ]
+        numeric_id = self._extract_listing_numeric_id(listing.url)
+        listing_candidates = [x for x in [listing.listing_id, numeric_id] if x]
+
+        operations = [
+            ("addListingToCart", "mutation addListingToCart($listingId: ID!, $quantity: Int!){ addListingToCart(listingId:$listingId, quantity:$quantity){ __typename } }"),
+            ("addToCart", "mutation addToCart($listingId: ID!, $quantity: Int!){ addToCart(listingId:$listingId, quantity:$quantity){ __typename } }"),
+            ("createCheckoutFromListing", "mutation createCheckoutFromListing($listingId: ID!){ createCheckoutFromListing(listingId:$listingId){ __typename } }"),
+        ]
+
+        last_message = ""
+        for endpoint in endpoints:
+            for listing_id in listing_candidates:
+                for op_name, mutation in operations:
+                    payload = [{
+                        "operationName": op_name,
+                        "variables": {"listingId": listing_id, "quantity": 1},
+                        "query": mutation,
+                    }]
+                    try:
+                        status, body = self._http_post_json(endpoint, payload)
+                    except Exception as exc:
+                        last_message = str(exc)
+                        continue
+
+                    if status in {401, 403}:
+                        return CartResult(False, status, endpoint, "Sesión inválida/no autorizada")
+                    if status == 200 and body and '"errors"' not in body:
+                        return CartResult(True, status, endpoint, f"GraphQL {op_name} ejecutado. Entra a finalizar compra")
+                    last_message = f"{endpoint} {op_name} -> {status}: {body[:160]}"
+
+        if last_message:
+            return CartResult(False, 0, "graphql", last_message)
+        return None
 
     def _http_get(self, url: str, params: dict[str, str]) -> tuple[int, str]:
         full_url = f"{url}?{urlencode(params)}" if params else url
@@ -316,6 +362,14 @@ class TicketSwapClient:
                 count = int(match.group(1))
                 return count if count > 0 else 1
         return 1
+
+
+    @staticmethod
+    def _extract_listing_numeric_id(url: str) -> str:
+        match = re.search(r"/listing/[^/]+/(\d+)/", url)
+        if not match:
+            return ""
+        return match.group(1)
 
     @staticmethod
     def _append_new(target: list[Listing], seen: set[str], source: list[Listing]) -> None:
