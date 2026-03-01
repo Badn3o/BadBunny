@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from .config import Settings
 from .runtime_state import RuntimeStateStore
 from .tickerswap import Listing, TicketSwapClient
+
+
+logger = logging.getLogger(__name__)
 
 
 class Notifier(Protocol):
@@ -61,13 +65,28 @@ class BadBunnyMonitor:
         self.notifier.set_operation_mode(state.operation_mode)
 
     async def _tick(self) -> None:
-        listings = await self.client.search(self.settings.ticketswap_query)
+        search = await self.client.search(
+            self.settings.ticketswap_query,
+            event_url=self.settings.ticketswap_event_url,
+        )
+        listings = search.listings
         new_items = self.seen.find_new(listings)
 
         cart_attempts = 0
         cart_successes = 0
         operation_mode = self.notifier.get_operation_mode()
         max_price = self.notifier.get_max_price_eur()
+
+        logger.info(
+            "Monitor tick: listings=%s new=%s mode=%s max_price=%s",
+            len(listings),
+            len(new_items),
+            operation_mode,
+            max_price,
+        )
+
+        if self.settings.progress_to_telegram:
+            await self.notifier.send_message(self._format_progress(search.trace, len(listings), len(new_items)))
 
         for item in new_items:
             await self.notifier.send_message(self._format_alert(item))
@@ -93,6 +112,18 @@ class BadBunnyMonitor:
         if item.unit_price_eur is None:
             return False
         return item.unit_price_eur <= max_price_eur
+
+    @staticmethod
+    def _format_progress(trace: list[str], listing_count: int, new_count: int) -> str:
+        tail = trace[-8:] if len(trace) > 8 else trace
+        trace_text = "\n".join(f"- {line}" for line in tail)
+        return (
+            "🔎 Progreso TicketSwap\n"
+            f"Resultados totales filtrados: {listing_count}\n"
+            f"Resultados nuevos: {new_count}\n"
+            "Detalle últimas búsquedas:\n"
+            f"{trace_text}"
+        )
 
     @staticmethod
     def _format_alert(item: Listing) -> str:
