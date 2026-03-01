@@ -17,6 +17,8 @@ class Settings:
     ticketswap_buyer_cookie: str = ""
     operation_mode: str = "real"
     runtime_state_path: str = "runtime_state.json"
+    ticketswap_event_url: str = ""
+    progress_to_telegram: bool = True
 
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -73,4 +75,6 @@ def load_settings() -> Settings:
         ticketswap_buyer_cookie=os.getenv("TICKETSWAP_BUYER_COOKIE", "").strip(),
         operation_mode=mode,
         runtime_state_path=os.getenv("RUNTIME_STATE_PATH", "runtime_state.json").strip() or "runtime_state.json",
+        ticketswap_event_url=os.getenv("TICKETSWAP_EVENT_URL", "").strip(),
+        progress_to_telegram=_to_bool(os.getenv("PROGRESS_TO_TELEGRAM"), default=True),
     )

@@ -2,24 +2,42 @@
 
 Bot de Telegram + monitor de TicketSwap para detectar entradas de **Bad Bunny en Madrid** y gestionar auto-carrito en modo test o real.
 
-## Interfaz gráfica (paso a paso)
+## Arranque único (instala + ejecuta todo)
 
-Arranca la interfaz web local:
+Usa un único script para dejar todo listo y arrancar panel + monitor:
 
 ```bash
-badbunny-monitor-ui
+./scripts/run_all.sh
 ```
 
-Abre `http://localhost:8080`.
+Este script:
+- crea `.venv` si no existe,
+- instala dependencias,
+- crea `.env` inicial con token/chat (si falta),
+- lanza el panel web en `http://localhost:8080`.
 
-La UI incluye guía para:
+## Panel web único (UI + control de proceso)
 
-1. Dar de alta y crear el bot de Telegram (`@BotFather`, token, chat id).
-2. Especificar precio máximo.
-3. Activar modo **TEST** (intenta carrito siempre y notifica "entra a finalizar compra").
-4. Activar modo **REAL** (mismo proceso, pero solo si precio unitario <= máximo).
+Desde la página puedes:
 
-La UI guarda estos valores en `runtime_state.json` y el monitor los aplica en cada ciclo.
+1. Editar completo el fichero `.env`.
+2. Guardar cambios.
+3. Guardar y relanzar todo el proceso.
+4. Iniciar/reiniciar/detener el monitor.
+5. Ver traza en vivo de `monitor.log` en la parte inferior.
+
+## Seguimiento de progreso (consultas TicketSwap)
+
+El monitor informa en logs y Telegram:
+- queries iterativas que está probando,
+- estado de llamadas API/HTML,
+- número de resultados filtrados y nuevos.
+
+Además, con `TICKETSWAP_EVENT_URL` hace análisis directo de la página del evento (incluyendo señales de `__NEXT_DATA__`, `alert` y `listing`).
+
+## Comportamiento especial en modo TEST
+
+Si en modo `test` no hay resultados nuevos pero la búsqueda sí devuelve entradas del evento, el sistema intenta carrito con una de ellas para validar flujo de extremo a extremo.
 
 ## Lógica de packs de entradas
 
@@ -34,32 +52,21 @@ En modo real, la comparación contra el máximo usa ese precio unitario.
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `TICKETSWAP_QUERY` (default: `bad bunny madrid`)
+- `TICKETSWAP_EVENT_URL` (URL de evento a inspeccionar)
 - `POLL_INTERVAL_SECONDS` (default: `30`)
 - `MAX_PRICE_EUR` (valor inicial)
 - `OPERATION_MODE` (`test` o `real`, valor inicial)
+- `PROGRESS_TO_TELEGRAM` (`true/false` para enviar trazas)
 - `RUNTIME_STATE_PATH` (default: `runtime_state.json`)
 - `TICKETSWAP_BUYER_COOKIE`
 
-## Comandos del bot
-
-- `/start`
-- `/status`
-- `/help`
-- `/max <precio>` o `/max off`
-- `/mode test` o `/mode real`
-
-## Instalación
+## Ejecución manual alternativa
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
-```
-
-## Ejecución monitor
-
-```bash
-badbunny-monitor
+python -m badbunny_monitor.gui
 ```
 
 ## Testing
