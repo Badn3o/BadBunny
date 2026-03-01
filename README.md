@@ -27,7 +27,7 @@ scripts\run_all.cmd
 Ambas opciones:
 - crean `.venv` si no existe,
 - instalan dependencias,
-- **usan el `.env` real existente** (no autogeneran valores),
+- crean `.env` inicial si falta,
 - arrancan el panel único en `http://localhost:8080`.
 
 ---
@@ -53,18 +53,14 @@ ya está corregido: el panel ahora relanza el monitor usando el **mismo intérpr
 
 Desde la página puedes:
 1. Editar completo el archivo `.env`.
-2. Guardar cambios sin que la UI altere formato/valores.
+2. Guardar cambios.
 3. Guardar y relanzar monitor.
 4. Iniciar/Reiniciar/Detener monitor.
 5. Ver traza en vivo (`monitor.log`) al final de la página.
 
-Se corrigieron errores de relanzado en Windows y carga de `.env` con BOM UTF-8 (común en PowerShell).
-
 ---
 
 ## 4) Configuración de `.env` (paso a paso)
-
-> Importante: debes tener un `.env` válido antes de arrancar. Los scripts ya no lo sobrescriben ni generan uno de ejemplo automáticamente.
 
 Variables principales:
 

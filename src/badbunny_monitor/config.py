@@ -39,12 +39,12 @@ def _to_optional_float(value: str | None) -> float | None:
 def _load_dotenv_file(path: Path) -> None:
     if not path.exists():
         return
-    for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = raw_line.lstrip("\ufeff").strip()
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        key = key.strip().lstrip("\ufeff")
+        key = key.strip()
         value = value.strip().strip('"').strip("'")
         os.environ.setdefault(key, value)
 

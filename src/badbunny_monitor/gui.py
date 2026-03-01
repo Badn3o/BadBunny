@@ -11,7 +11,7 @@ import threading
 from wsgiref.simple_server import make_server
 from urllib.parse import parse_qs
 
-from .runtime_state import RuntimeStateStore
+from .runtime_state import RuntimeState, RuntimeStateStore
 
 
 @dataclass
@@ -27,90 +27,61 @@ class ProcessManager:
         self.log_path = Path(log_path)
         self.state = MonitorProcessState()
         self._lock = threading.Lock()
-        self._log_handle = None
 
     def read_env_text(self) -> str:
         if not self.env_path.exists():
             return ""
-        return self.env_path.read_text(encoding="utf-8", errors="ignore")
+        return self.env_path.read_text(encoding="utf-8")
 
     def write_env_text(self, text: str) -> None:
-        normalized = text.replace("\r\n", "\n")
-        self.env_path.write_text(normalized, encoding="utf-8")
+        self.env_path.write_text(text.strip() + "\n", encoding="utf-8")
 
     def _load_env_dict(self) -> dict[str, str]:
         env = os.environ.copy()
         if not self.env_path.exists():
             return env
-        for raw_line in self.env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            line = raw_line.lstrip("\ufeff").strip()
+        for raw_line in self.env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
-            env[key.strip().lstrip("\ufeff")] = value.strip().strip('"').strip("'")
+            env[key.strip()] = value.strip().strip('"').strip("'")
         return env
-
-    def _close_log_handle(self) -> None:
-        if self._log_handle is not None:
-            try:
-                self._log_handle.close()
-            except Exception:
-                pass
-            self._log_handle = None
-
-    def _append_boot_log(self, message: str) -> None:
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(timezone.utc).isoformat()
-        with self.log_path.open("a", encoding="utf-8") as fh:
-            fh.write(f"[{timestamp}] {message}\n")
 
     def start_monitor(self) -> str:
         with self._lock:
             if self.state.process and self.state.process.poll() is None:
                 return "Monitor ya está en ejecución."
-
-            if not self.env_path.exists():
-                msg = "No existe .env. Crea/pega tu configuración real en el editor y guarda antes de iniciar."
-                self._append_boot_log(msg)
-                return msg
-
             env = self._load_env_dict()
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            self._close_log_handle()
-            self._log_handle = self.log_path.open("a", encoding="utf-8", buffering=1)
+            log_file = self.log_path.open("a", encoding="utf-8")
             command = [sys.executable, "-m", "badbunny_monitor.main"]
 
+            # Si el paquete no está instalado en el intérprete activo,
+            # añadimos `src` a PYTHONPATH para ejecución desde repositorio.
             repo_src = str((Path(__file__).resolve().parents[2] / "src"))
             current_pythonpath = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = (
                 f"{repo_src}{os.pathsep}{current_pythonpath}" if current_pythonpath else repo_src
             )
 
-            try:
-                process = subprocess.Popen(
-                    command,
-                    cwd=str(Path(__file__).resolve().parents[2]),
-                    stdout=self._log_handle,
-                    stderr=self._log_handle,
-                    text=True,
-                    env=env,
-                )
-            except Exception as exc:
-                self._append_boot_log(f"Error iniciando monitor: {exc}")
-                self._close_log_handle()
-                return f"Error iniciando monitor: {exc}"
-
+            process = subprocess.Popen(
+                command,
+                cwd=str(Path(__file__).resolve().parents[2]),
+                stdout=log_file,
+                stderr=log_file,
+                text=True,
+                env=env,
+            )
             self.state.process = process
             self.state.started_at_iso = datetime.now(timezone.utc).isoformat()
             self.state.last_exit_code = None
-            self._append_boot_log(f"Monitor iniciado con PID={process.pid}")
             return "Monitor iniciado."
 
     def stop_monitor(self) -> str:
         with self._lock:
             proc = self.state.process
             if not proc or proc.poll() is not None:
-                self._close_log_handle()
                 return "Monitor no está en ejecución."
             proc.terminate()
             try:
@@ -119,8 +90,6 @@ class ProcessManager:
                 proc.kill()
                 proc.wait(timeout=5)
             self.state.last_exit_code = proc.returncode
-            self._append_boot_log(f"Monitor detenido (exit={proc.returncode})")
-            self._close_log_handle()
             return f"Monitor detenido (exit={proc.returncode})."
 
     def restart_monitor(self) -> str:
@@ -135,7 +104,6 @@ class ProcessManager:
         if rc is None:
             return "running"
         self.state.last_exit_code = rc
-        self._close_log_handle()
         return f"exited({rc})"
 
     def tail_log(self, lines: int = 120) -> str:
@@ -227,7 +195,7 @@ def create_app(state_path: str = "runtime_state.json", env_path: str = ".env"):
         if method == "POST" and path == "/save-env":
             size = int(environ.get("CONTENT_LENGTH") or 0)
             body = environ["wsgi.input"].read(size).decode("utf-8")
-            form = parse_qs(body, keep_blank_values=True)
+            form = parse_qs(body)
             env_text = (form.get("env_text") or [""])[0]
             action = (form.get("action") or ["save"])[0]
             manager.write_env_text(env_text)
@@ -242,7 +210,7 @@ def create_app(state_path: str = "runtime_state.json", env_path: str = ".env"):
         if method == "POST" and path == "/control":
             size = int(environ.get("CONTENT_LENGTH") or 0)
             body = environ["wsgi.input"].read(size).decode("utf-8")
-            form = parse_qs(body, keep_blank_values=True)
+            form = parse_qs(body)
             action = (form.get("action") or [""])[0]
             if action == "start":
                 message = manager.start_monitor()
