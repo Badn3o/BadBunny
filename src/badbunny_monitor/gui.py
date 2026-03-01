@@ -6,6 +6,7 @@ from html import escape
 import os
 from pathlib import Path
 import subprocess
+import sys
 import threading
 from wsgiref.simple_server import make_server
 from urllib.parse import parse_qs
@@ -54,8 +55,19 @@ class ProcessManager:
             env = self._load_env_dict()
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             log_file = self.log_path.open("a", encoding="utf-8")
+            command = [sys.executable, "-m", "badbunny_monitor.main"]
+
+            # Si el paquete no está instalado en el intérprete activo,
+            # añadimos `src` a PYTHONPATH para ejecución desde repositorio.
+            repo_src = str((Path(__file__).resolve().parents[2] / "src"))
+            current_pythonpath = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = (
+                f"{repo_src}{os.pathsep}{current_pythonpath}" if current_pythonpath else repo_src
+            )
+
             process = subprocess.Popen(
-                ["python", "-m", "badbunny_monitor.main"],
+                command,
+                cwd=str(Path(__file__).resolve().parents[2]),
                 stdout=log_file,
                 stderr=log_file,
                 text=True,

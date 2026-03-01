@@ -42,6 +42,15 @@ Ambas opciones:
 
 ## 3) Panel único web (`http://localhost:8080`)
 
+### Nota importante en Windows (error ModuleNotFoundError)
+
+Si antes veías el error:
+
+`Error while finding module specification for 'badbunny_monitor.main' (ModuleNotFoundError)`
+
+ya está corregido: el panel ahora relanza el monitor usando el **mismo intérprete Python activo** (venv) y fuerza `PYTHONPATH=src` como fallback.
+
+
 Desde la página puedes:
 1. Editar completo el archivo `.env`.
 2. Guardar cambios.
