@@ -1,49 +1,52 @@
 # BadBunny Monitor
 
-Bot de Telegram + monitor de TicketSwap para detectar nuevas entradas de **Bad Bunny en Madrid** y, si cumplen precio máximo, intentar enviarlas al carrito lo más rápido posible.
+Bot de Telegram + monitor de TicketSwap para detectar entradas de **Bad Bunny en Madrid** y gestionar auto-carrito en modo test o real.
 
-## Qué hace
+## Interfaz gráfica (paso a paso)
 
-- Consulta TicketSwap cada `POLL_INTERVAL_SECONDS`.
-- Filtra resultados por `bad bunny` + `madrid`.
-- Detecta nuevas entradas (deduplicación en memoria).
-- Notifica por Telegram cada entrada nueva.
-- Si el precio detectado es `<= max` configurado, intenta **add to cart** inmediatamente.
-
-> Nota importante: TicketSwap puede cambiar APIs/endpoints y mecanismos anti-bot; puede requerir ajustes periódicos.
-
-## Requisitos
-
-- Python 3.10+
-- Token de bot de Telegram (BotFather)
-- Chat ID destino
-- Cookie de sesión de comprador de TicketSwap para operaciones de carrito
-
-## Configuración
-
-1. Copia `.env.example` a `.env`.
-2. Rellena variables.
+Arranca la interfaz web local:
 
 ```bash
-cp .env.example .env
+badbunny-monitor-ui
 ```
 
-Variables principales:
+Abre `http://localhost:8080`.
 
-- `TELEGRAM_BOT_TOKEN`: token del bot.
-- `TELEGRAM_CHAT_ID`: chat donde mandar alertas.
-- `TICKETSWAP_QUERY`: por defecto `bad bunny madrid`.
-- `POLL_INTERVAL_SECONDS`: intervalo de sondeo, por defecto `30`.
-- `MAX_PRICE_EUR`: máximo de auto-compra inicial (se puede cambiar por Telegram).
-- `TICKETSWAP_BUYER_COOKIE`: cookie de sesión para intentar carrito.
+La UI incluye guía para:
+
+1. Dar de alta y crear el bot de Telegram (`@BotFather`, token, chat id).
+2. Especificar precio máximo.
+3. Activar modo **TEST** (intenta carrito siempre y notifica "entra a finalizar compra").
+4. Activar modo **REAL** (mismo proceso, pero solo si precio unitario <= máximo).
+
+La UI guarda estos valores en `runtime_state.json` y el monitor los aplica en cada ciclo.
+
+## Lógica de packs de entradas
+
+Si TicketSwap detecta un pack (ej. 3 entradas), el monitor calcula:
+
+`precio unitario = precio total del pack / número de entradas`
+
+En modo real, la comparación contra el máximo usa ese precio unitario.
+
+## Variables de entorno
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `TICKETSWAP_QUERY` (default: `bad bunny madrid`)
+- `POLL_INTERVAL_SECONDS` (default: `30`)
+- `MAX_PRICE_EUR` (valor inicial)
+- `OPERATION_MODE` (`test` o `real`, valor inicial)
+- `RUNTIME_STATE_PATH` (default: `runtime_state.json`)
+- `TICKETSWAP_BUYER_COOKIE`
 
 ## Comandos del bot
 
 - `/start`
 - `/status`
 - `/help`
-- `/max <precio>` (ej. `/max 175`) para activar/actualizar auto-compra.
-- `/max off` para desactivar auto-compra.
+- `/max <precio>` o `/max off`
+- `/mode test` o `/mode real`
 
 ## Instalación
 
@@ -53,7 +56,7 @@ source .venv/bin/activate
 pip install -e .[dev]
 ```
 
-## Ejecución
+## Ejecución monitor
 
 ```bash
 badbunny-monitor

@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 badbunny-monitor = "badbunny_monitor.main:main"
+badbunny-monitor-ui = "badbunny_monitor.gui:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

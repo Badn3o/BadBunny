@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 import json
 import re
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -15,7 +16,14 @@ class Listing:
     city: str
     url: str
     price_text: str | None = None
-    price_eur: float | None = None
+    total_price_eur: float | None = None
+    ticket_count: int = 1
+
+    @property
+    def unit_price_eur(self) -> float | None:
+        if self.total_price_eur is None or self.ticket_count <= 0:
+            return None
+        return self.total_price_eur / self.ticket_count
 
 
 @dataclass(frozen=True)
@@ -27,8 +35,6 @@ class CartResult:
 
 
 class TicketSwapClient:
-    """Cliente de lectura para encontrar eventos/listados de TicketSwap."""
-
     BASE_URL = "https://www.ticketswap.com"
 
     def __init__(self, timeout_seconds: int = 12, buyer_cookie: str = "") -> None:
@@ -58,20 +64,22 @@ class TicketSwapClient:
             f"{self.BASE_URL}/api/checkout/v1/cart/items",
             f"{self.BASE_URL}/api/buyer/cart/items",
         ]
+
+        last_error = "N/A"
         for endpoint in candidate_endpoints:
             try:
                 status, body = self._http_post_json(endpoint, payload)
                 if 200 <= status < 300:
-                    return CartResult(True, status, endpoint, "Entrada añadida al carrito")
+                    return CartResult(True, status, endpoint, "Entrada añadida al carrito. Entra a finalizar compra")
                 if status in {401, 403}:
                     return CartResult(False, status, endpoint, "Sesión inválida/no autorizada")
                 if status in {404, 405}:
                     continue
-                return CartResult(False, status, endpoint, body[:180])
+                return CartResult(False, status, endpoint, body[:200])
             except Exception as exc:
                 last_error = str(exc)
-                continue
-        return CartResult(False, 0, "", f"No se pudo añadir al carrito. Último error: {locals().get('last_error', 'N/A')}")
+
+        return CartResult(False, 0, "", f"No se pudo añadir al carrito. Último error: {last_error}")
 
     def _http_get(self, url: str, params: dict[str, str]) -> tuple[int, str]:
         full_url = f"{url}?{urlencode(params)}" if params else url
@@ -99,10 +107,14 @@ class TicketSwapClient:
                 "Cookie": self.buyer_cookie,
             },
         )
-        with urlopen(req, timeout=self.timeout_seconds) as response:  # nosec B310
-            status = getattr(response, "status", 200)
-            body = response.read().decode("utf-8", errors="ignore")
-            return status, body
+        try:
+            with urlopen(req, timeout=self.timeout_seconds) as response:  # nosec B310
+                status = getattr(response, "status", 200)
+                body = response.read().decode("utf-8", errors="ignore")
+                return status, body
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="ignore")
+            return exc.code, body
 
     def _search_json_api(self, query: str) -> list[Listing]:
         url = f"{self.BASE_URL}/api/search/v2/events"
@@ -135,7 +147,10 @@ class TicketSwapClient:
             if not name:
                 continue
             price_text = str(item.get("price") or item.get("lowest_price") or "").strip() or None
-            price_eur = self._extract_price(price_text or "")
+            total_price = self._extract_price(price_text or "")
+            ticket_count = self._extract_ticket_count(
+                f"{item.get('number_of_tickets', '')} {item.get('quantity', '')} {name}"
+            )
             listings.append(
                 Listing(
                     listing_id=item_id,
@@ -143,7 +158,8 @@ class TicketSwapClient:
                     city=city,
                     url=url or self.BASE_URL,
                     price_text=price_text,
-                    price_eur=price_eur,
+                    total_price_eur=total_price,
+                    ticket_count=ticket_count,
                 )
             )
         return listings
@@ -169,8 +185,9 @@ class TicketSwapClient:
                 continue
             absolute = href if href.startswith("http") else f"{self.BASE_URL}{href}"
             city = "Madrid" if "madrid" in text.lower() or "madrid" in href.lower() else ""
-            price_eur = self._extract_price(text)
-            price_text = f"€{price_eur:.2f}" if price_eur is not None else None
+            total_price = self._extract_price(text)
+            price_text = f"€{total_price:.2f}" if total_price is not None else None
+            ticket_count = self._extract_ticket_count(text)
             results.append(
                 Listing(
                     listing_id=absolute,
@@ -178,7 +195,8 @@ class TicketSwapClient:
                     city=city,
                     url=absolute,
                     price_text=price_text,
-                    price_eur=price_eur,
+                    total_price_eur=total_price,
+                    ticket_count=ticket_count,
                 )
             )
 
@@ -201,3 +219,18 @@ class TicketSwapClient:
         if not match:
             return None
         return float(match.group(1).replace(",", "."))
+
+    @staticmethod
+    def _extract_ticket_count(value: str) -> int:
+        text = value.lower()
+        patterns = [
+            r"(\d+)\s*(tickets?|entradas?)",
+            r"pack\s*de\s*(\d+)",
+            r"x\s*(\d+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                count = int(match.group(1))
+                return count if count > 0 else 1
+        return 1
